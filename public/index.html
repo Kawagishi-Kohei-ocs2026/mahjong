@@ -232,22 +232,58 @@ socket.on('room-update', (seats) => {
 });
 
 // ── ゲーム開始通知（全員に届く） ──
-socket.on('game-start', ({ players, turn }) => {
+socket.on('game-start', ({ players, hands, deck, dora, uraDoraHidden, turn, dealerIdx, scores, roundNum, honba }) => {
   // 自分の席番号をsocket.idで特定
-  const myServerIdx = players.findIndex(p => p.id === socket.id);
+  const myServerIdx = players.findIndex(p => p && p.id === socket.id);
   if (myServerIdx !== -1) G.myIdx = myServerIdx;
   for (let i = 0; i < 4; i++) {
     if (players[i]) {
       G.names[i] = players[i].name;
-      G.slotTypes[i] = 'human';
+      G.slotTypes[i] = players[i].isCpu ? 'cpu' : 'human';
     }
   }
+  // サーバーから受け取った盤面状態をセット
+  G.hands        = hands;
+  G.deck         = deck;
+  G.dora         = dora;
+  G.uraDoraHidden = uraDoraHidden;
+  G.turn         = turn;
+  G.dealerIdx    = dealerIdx;
+  G.scores       = scores;
+  G.roundNum     = roundNum;
+  G.honba        = honba;
   startGame();
 });
 
-// ── 捨て牌など他プレイヤーのアクションを受信 ──
+// ── ツモ牌が届いた（全員に通知） ──
+socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
+  G.hands[playerIdx].push(tile);
+  G.deck = { length: deckRemaining }; // デッキ残枚数だけ保持
+  G.drewTile = true;
+  G.phase = 'discard';
+  G.turn = playerIdx;
+  renderAll();
+
+  if (playerIdx === G.myIdx) {
+    G.selectedIdx = G.hands[G.myIdx].length - 1;
+    renderHand();
+    enableMyActions();
+    setStatus('牌を選んで切るか、和了を宣言してください');
+  } else {
+    setStatus(`${G.names[playerIdx]} がツモりました`);
+    // CPU席なら自動で切る
+    if (G.slotTypes[playerIdx] === 'cpu') {
+      setTimeout(() => scheduleCPU(playerIdx), 800);
+    }
+  }
+});
+
+socket.on('ryukyoku-server', () => {
+  ryukyoku();
+});
+
 socket.on('game-action', (data) => {
-  if (data.from === socket.id) return; // 自分のアクションは無視
+  if (data.from === socket.id) return; // 自分が送ったアクションは無視
   handleRemoteAction(data);
 });
 
@@ -879,21 +915,29 @@ function renderWaitPlayers(){
 //  REMOTE ACTION HANDLER（他プレイヤーの操作を受信）
 // ═══════════════════════════════════════════════════════
 function handleRemoteAction(data){
+  const pidx = data.playerIdx;
   if(data.type==='discard'){
-    // 相手が捨てた牌をゲーム状態に反映
-    const pidx = data.playerIdx;
-    if(pidx === G.myIdx) return; // 自分のはスキップ
+    if(pidx === G.myIdx) return; // 自分の捨て牌は既に処理済み
     const tile = data.tile;
-    // 手牌から削除してdiscardに追加（簡易: discardに追加のみ）
+
+    // 相手の手牌から捨てた牌を削除
+    const idx = G.hands[pidx]?.findIndex(t => tileKey(t) === tileKey(tile));
+    if(idx >= 0) G.hands[pidx].splice(idx, 1);
+
+    G.discards[pidx] = G.discards[pidx] || [];
     G.discards[pidx].push(tile);
+    G.waitingTile = tile;
+    G.waitingFrom = pidx;
     G.turn = data.turn;
-    G.phase = 'draw';
+    G.phase = 'claim';
+    G.drewTile = false;
+
     renderAll();
-    setStatus(`${G.names[pidx]}が${tileText(tile)}を切りました`);
-    if(G.turn === G.myIdx){
-      G.phase='draw';
-      enableMyActions();
-    }
+    showLog(`${G.names[pidx]}: ${tileText(tile)} を捨てた`);
+    setStatus(`${G.names[pidx]} が ${tileText(tile)} を切りました`);
+
+    // 自分が鳴けるか・ロンできるかチェック
+    setTimeout(() => checkClaims(pidx, tile), 400);
   }
 }
 
@@ -901,9 +945,32 @@ function handleRemoteAction(data){
 //  GAME INIT
 // ═══════════════════════════════════════════════════════
 function startGame(){
+  // リセット（サーバーからのデータは game-start で既にセット済み）
+  G.melds        = [[], [], [], []];
+  G.riichi       = [false, false, false, false];
+  G.riichiTile   = [null, null, null, null];
+  G.riichiSticks = 0;
+  G.drewTile     = false;
+  G.selectedIdx  = -1;
+  G.waitingTile  = null;
+  G.waitingFrom  = -1;
+  G.phase        = 'dealing';
+
   showScreen('screen-game');
   document.getElementById('screen-game').classList.add('active');
-  initRound();
+  updateHeader();
+  renderAll();
+
+  // 自分がディーラーならツモボタンを有効化、そうでなければ待機
+  if (G.dealerIdx === G.myIdx) {
+    G.phase = 'draw';
+    setStatus('あなたのツモ番です（ツモボタンを押してください）');
+    document.getElementById('btn-draw').disabled = false;
+  } else {
+    G.phase = 'draw';
+    setStatus(`${G.names[G.dealerIdx]} のツモ番です`);
+    disableAllActions();
+  }
 }
 
 function initRound(){
@@ -1163,7 +1230,10 @@ function selectTile(i){
 
 function actionDraw(){
   if(G.turn!==G.myIdx||G.phase!=='draw') return;
-  drawForPlayer(G.myIdx);
+  // サーバーにツモ要求を送る（サーバーが牌を決めて全員に通知）
+  socket.emit("draw-tile", { roomId: G.roomId });
+  disableAllActions();
+  setStatus('ツモ中...');
 }
 
 function actionDiscard(){
@@ -1498,16 +1568,23 @@ function passToNext(fromIdx){
   disableAllActions();
 
   if(G.turn===G.myIdx){
-    // プレイヤーは自分でツモボタンを押す
+    // 自分のツモ番 → ツモボタンを有効化
     document.getElementById('btn-draw').disabled=false;
     setStatus('ツモ牌を引いてください');
     setTurnTxt(true);
-  } else {
-    // CPUは自動でツモ→捨てまで実行
+  } else if(G.slotTypes[G.turn]==='cpu'){
+    // CPU席 → ホストだけがdraw-tileをサーバーに送る（席0が担当）
     setTurnTxt(false);
     setStatus(`${G.names[G.turn]}のツモ番`);
-    // drawForPlayer が phase='discard' にして scheduleCPU を呼ぶ
-    setTimeout(()=>drawForPlayer(G.turn), 600+Math.random()*400);
+    if(G.myIdx===0){
+      setTimeout(()=>{
+        socket.emit("draw-tile", { roomId: G.roomId });
+      }, 600+Math.random()*400);
+    }
+  } else {
+    // 他の人間プレイヤーのツモ番 → 向こうが draw-tile を送る
+    setTurnTxt(false);
+    setStatus(`${G.names[G.turn]}のツモ番`);
   }
 }
 
@@ -1595,9 +1672,15 @@ function cpuDiscard(pidx,tile){
   G.waitingFrom=pidx;
   G.drewTile=false;
   G.phase='claim';
-  
+
   showLog(`${G.names[pidx]}: ${tileText(tile)} を捨てた`);
   renderAll();
+
+  // サーバーに捨て牌を通知（全員に同期）
+  socket.emit("game-action", {
+    roomId: G.roomId,
+    data: { type: "discard", playerIdx: pidx, tile }
+  });
 
   // プレイヤーがロンできるか確認
   const handPlus=[...G.hands[G.myIdx],tile];
@@ -1609,7 +1692,6 @@ function cpuDiscard(pidx,tile){
       document.getElementById('btn-ron').disabled=false;
       setStatus(`ロン！ ${G.names[pidx]}が ${tileText(tile)} を捨てました`);
       setTurnTxt(true);
-      // 3秒待ってロンしなければスルー
       G.ronTimeout=setTimeout(()=>{ if(G.phase==='claim'){ document.getElementById('btn-ron').disabled=true; checkClaims(pidx,tile); } },3000);
       return;
     }
