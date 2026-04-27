@@ -213,6 +213,47 @@ const socket = io();
 socket.on('connect', () => {
   console.log("接続成功:", socket.id);
 });
+
+// ── サーバーから参加者リスト更新が届いたら待機画面を同期 ──
+socket.on('room-update', (seats) => {
+  for (let i = 0; i < 4; i++) {
+    if (seats[i]) {
+      G.names[i] = seats[i].name;
+      G.slotTypes[i] = 'human';
+      // 自分の席番号をsocket.idで特定
+      if (seats[i].id === socket.id) G.myIdx = i;
+    } else {
+      G.names[i] = '';
+      G.slotTypes[i] = null;
+    }
+  }
+  renderWaitPlayers();
+  checkStartReady();
+});
+
+// ── ゲーム開始通知（全員に届く） ──
+socket.on('game-start', ({ players, turn }) => {
+  // 自分の席番号をsocket.idで特定
+  const myServerIdx = players.findIndex(p => p.id === socket.id);
+  if (myServerIdx !== -1) G.myIdx = myServerIdx;
+  for (let i = 0; i < 4; i++) {
+    if (players[i]) {
+      G.names[i] = players[i].name;
+      G.slotTypes[i] = 'human';
+    }
+  }
+  startGame();
+});
+
+// ── 捨て牌など他プレイヤーのアクションを受信 ──
+socket.on('game-action', (data) => {
+  if (data.from === socket.id) return; // 自分のアクションは無視
+  handleRemoteAction(data);
+});
+
+socket.on('room-full', () => {
+  alert('この部屋は満員です（4人）。');
+});
 </script>
 
 <!-- ── LOBBY ── -->
@@ -667,8 +708,12 @@ function calcPayment(pts, tsumo, isDealer){
 }
 
 function startOnlineGame(){
-  socket.emit("start-game", G.roomId);
-  startGame(); // ← 既存の関数をそのまま使う
+  socket.emit("start-game", {
+    roomId: G.roomId,
+    names: G.names,
+    slotTypes: G.slotTypes
+  });
+  // ゲーム開始はgame-startイベントを受け取ってから（自分にも届く）
 }
 
 // ═══════════════════════════════════════════════════════
@@ -737,6 +782,8 @@ function createRoom(){
   G.names[0]=name;
   G.roomId=genRoomId();
   G.myIdx=0;
+  // サーバーにルーム作成 & 参加を通知
+  socket.emit("join-room", { roomId: G.roomId, name });
   enterWait(true);
 }
 
@@ -747,13 +794,11 @@ function joinRoom(){
   if(!rid){alert('ルームIDを入力してください');return;}
   G.names[0]=name;
   G.roomId=rid;
-  // Assign random seat (demo)
-  G.myIdx=0; // In real app, server assigns
+  // myIdxはroom-updateで確定するまで仮置き
   socket.emit("join-room", {
     roomId: G.roomId,
     name: G.names[0]
   });
-
   enterWait(false);
 }
 
@@ -762,9 +807,12 @@ function enterWait(isHost){
   history.pushState({},'',getShareURL(G.roomId));
   document.getElementById('share-url').textContent=getShareURL(G.roomId);
   document.getElementById('disp-room-id').textContent=G.roomId;
-  G.slotTypes=['human',null,null,null];
-  G.names=['','','',''];
-  G.names[G.myIdx]=document.getElementById('inp-name').value.trim()||'あなた';
+  // ホストの場合だけローカルで初期化（room-updateが来るまでの暫定表示）
+  if(isHost){
+    G.slotTypes=['human',null,null,null];
+    G.names=[document.getElementById('inp-name').value.trim()||'あなた','','',''];
+  }
+  // 招待で入った場合はroom-updateが来るまで空表示
   renderWaitPlayers();
   checkStartReady();
   showScreen('screen-wait');
@@ -824,6 +872,28 @@ function renderWaitPlayers(){
       d.innerHTML=`<div class="p-empty">空席<br>待機中<span class="dots"><span>.</span><span>.</span><span>.</span></span></div><div class="slot-type-badge waiting">空き</div>`;
     }
     g.appendChild(d);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  REMOTE ACTION HANDLER（他プレイヤーの操作を受信）
+// ═══════════════════════════════════════════════════════
+function handleRemoteAction(data){
+  if(data.type==='discard'){
+    // 相手が捨てた牌をゲーム状態に反映
+    const pidx = data.playerIdx;
+    if(pidx === G.myIdx) return; // 自分のはスキップ
+    const tile = data.tile;
+    // 手牌から削除してdiscardに追加（簡易: discardに追加のみ）
+    G.discards[pidx].push(tile);
+    G.turn = data.turn;
+    G.phase = 'draw';
+    renderAll();
+    setStatus(`${G.names[pidx]}が${tileText(tile)}を切りました`);
+    if(G.turn === G.myIdx){
+      G.phase='draw';
+      enableMyActions();
+    }
   }
 }
 
