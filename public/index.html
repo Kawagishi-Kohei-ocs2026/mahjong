@@ -46,6 +46,12 @@ input::placeholder{color:rgba(245,240,232,.3)}
 .btn-gold:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(201,168,76,.5)}
 .btn-outline{background:transparent;border:1px solid rgba(201,168,76,.4);color:var(--gold-lt)}
 .btn-outline:hover{background:rgba(201,168,76,.1);border-color:var(--gold)}
+.btn-cpu{background:rgba(30,132,73,.2);border:1px solid rgba(30,132,73,.5);color:#5dde8a;margin-bottom:.7rem}
+.btn-cpu:hover{background:rgba(30,132,73,.35);border-color:#5dde8a}
+.slot-type-badge{font-size:.58rem;letter-spacing:.06em;padding:.1rem .35rem;border-radius:2px;margin-top:.15rem}
+.slot-type-badge.cpu{background:rgba(30,132,73,.25);color:#5dde8a;border:1px solid rgba(30,132,73,.4)}
+.slot-type-badge.human{background:rgba(36,113,163,.25);color:#7ec8f5;border:1px solid rgba(36,113,163,.4)}
+.slot-type-badge.waiting{background:rgba(201,168,76,.1);color:rgba(245,240,232,.4)}
 .divider{display:flex;align-items:center;gap:.8rem;color:rgba(245,240,232,.3);font-size:.75rem;margin:.4rem 0}
 .divider::before,.divider::after{content:'';flex:1;height:1px;background:rgba(201,168,76,.2)}
 .share-box{background:rgba(0,0,0,.35);border:var(--bdr);border-radius:2px;padding:.7rem .9rem;
@@ -247,7 +253,10 @@ socket.on('connect', () => {
       参加者を待っています<span class="dots"><span>.</span><span>.</span><span>.</span></span>
     </div>
   </div>
-  <button class="btn btn-gold" id="btn-start" style="max-width:400px;display:none" onclick="startOnlineGame()">ゲーム開始</button>
+  <div style="display:flex;gap:.6rem;width:100%;max-width:400px;flex-direction:column">
+    <button class="btn btn-cpu" id="btn-fill-cpu" onclick="fillWithCPU()">🤖 CPUで空席を埋める</button>
+    <button class="btn btn-gold" id="btn-start" style="display:none" onclick="startOnlineGame()">ゲーム開始</button>
+  </div>
 </div>
 
 <!-- ── GAME ── -->
@@ -668,7 +677,8 @@ function startOnlineGame(){
 const G = {
   roomId: null,
   myIdx: 0,        // 0=dealer(東), 1=南, 2=西, 3=北  (relative to round)
-  names: ['あなた','CPU南','CPU西','CPU北'],
+  names: ['あなた','','',''],
+  slotTypes: ['human',null,null,null],
   scores: [25000,25000,25000,25000],
   
   // Round state
@@ -747,28 +757,49 @@ function joinRoom(){
   enterWait(false);
 }
 
-let botJoined=0;
+// G.slotTypes: 'human'|'cpu'|null for each seat
 function enterWait(isHost){
   history.pushState({},'',getShareURL(G.roomId));
   document.getElementById('share-url').textContent=getShareURL(G.roomId);
   document.getElementById('disp-room-id').textContent=G.roomId;
-  G.players=[{idx:0,name:G.names[0]}];
-  botJoined=0;
+  G.slotTypes=['human',null,null,null];
+  G.names=['','','',''];
+  G.names[G.myIdx]=document.getElementById('inp-name').value.trim()||'あなた';
   renderWaitPlayers();
+  checkStartReady();
   showScreen('screen-wait');
-  // Simulate bots joining
-  [1600,3000,4500].forEach((d,i)=>{
-    setTimeout(()=>{
-      const botIdx=i+1;
-      G.names[botIdx]=['さくらCPU','たろうCPU','はなCPU'][i];
-      renderWaitPlayers();
-      if(i===2){
-        document.getElementById('wait-msg').textContent='全員揃いました！';
-        document.getElementById('btn-start').style.display='block';
-        if(!isHost) setTimeout(startGame,1500);
-      }
-    },d);
-  });
+}
+
+function fillWithCPU(){
+  const cpuNames=['さくらCPU','たろうCPU','はなCPU','けんじCPU'];
+  let cpuIdx=0;
+  for(let i=0;i<4;i++){
+    if(G.slotTypes[i]===null){
+      G.slotTypes[i]='cpu';
+      while(cpuIdx<cpuNames.length && G.names.includes(cpuNames[cpuIdx])) cpuIdx++;
+      G.names[i]=cpuNames[cpuIdx]||`CPU${i}`;
+      cpuIdx++;
+    }
+  }
+  renderWaitPlayers();
+  checkStartReady();
+}
+
+function checkStartReady(){
+  const allFilled=G.slotTypes.every(t=>t!==null);
+  const waitMsg=document.getElementById('wait-msg');
+  const btnStart=document.getElementById('btn-start');
+  const btnFill=document.getElementById('btn-fill-cpu');
+  if(allFilled){
+    waitMsg.textContent='全員揃いました！';
+    btnStart.style.display='block';
+    btnFill.style.display='none';
+  } else {
+    const empty=G.slotTypes.filter(t=>t===null).length;
+    waitMsg.innerHTML=`あと${empty}人を待っています<span class="dots"><span>.</span><span>.</span><span>.</span></span>`;
+    btnStart.style.display='none';
+    btnFill.style.display='block';
+  }
 }
 
 function renderWaitPlayers(){
@@ -778,13 +809,20 @@ function renderWaitPlayers(){
   g.innerHTML='';
   for(let i=0;i<4;i++){
     const name=G.names[i];
+    const type=G.slotTypes?G.slotTypes[i]:null;
     const isMe=i===G.myIdx;
-    const filled=!!name&&(i===0||i<=(G.names.filter(Boolean).length));
+    const filled=type!==null;
     const d=document.createElement('div');
     d.className='p-slot'+(filled?' filled':'')+(isMe?' me':'');
-    d.innerHTML=filled
-      ? `<div class="p-avatar">${avs[i]}</div><div class="p-name">${name}${isMe?' (あなた)':''}</div><div class="p-wind">${winds[i]}</div>`
-      : `<div class="p-empty">空席<br>待機中<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>`;
+    if(filled){
+      let badge='';
+      if(type==='cpu') badge=`<div class="slot-type-badge cpu">CPU</div>`;
+      else if(isMe) badge=`<div class="slot-type-badge human">あなた</div>`;
+      else badge=`<div class="slot-type-badge human">人間</div>`;
+      d.innerHTML=`<div class="p-avatar">${avs[i]}</div><div class="p-name">${name}</div><div class="p-wind">${winds[i]}</div>${badge}`;
+    } else {
+      d.innerHTML=`<div class="p-empty">空席<br>待機中<span class="dots"><span>.</span><span>.</span><span>.</span></span></div><div class="slot-type-badge waiting">空き</div>`;
+    }
     g.appendChild(d);
   }
 }
