@@ -286,7 +286,13 @@ socket.on('ryukyoku-server', () => {
 });
 
 socket.on('game-action', (data) => {
-  if (data.from === socket.id) return; // 自分が送ったアクションは無視
+  // 自分の捨て牌 or 自分が代行したCPU捨て牌は既にローカル処理済みなのでスキップ
+  if (data.playerIdx === G.myIdx) return;
+  if (G.slotTypes[data.playerIdx] === 'cpu') {
+    // CPU捨て牌はホスト（最若番の人間）が送った→ホストはスキップ
+    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
+    if(humanSeats.length>0 && humanSeats[0]===G.myIdx) return;
+  }
   handleRemoteAction(data);
 });
 
@@ -982,7 +988,7 @@ function startGame(){
     // 最若番の人間プレイヤー（ホスト）がCPUのツモを代行
     const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
     if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
-      setTimeout(() => socket.emit("draw-tile", { roomId: G.roomId }), 800);
+      setTimeout(() => socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.dealerIdx }), 800);
     }
   } else {
     G.phase = 'draw';
@@ -1248,8 +1254,8 @@ function selectTile(i){
 
 function actionDraw(){
   if(G.turn!==G.myIdx||G.phase!=='draw') return;
-  // サーバーにツモ要求を送る（サーバーが牌を決めて全員に通知）
-  socket.emit("draw-tile", { roomId: G.roomId });
+  // サーバーにツモ要求を送る（forSeat省略＝自分の席）
+  socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.myIdx });
   disableAllActions();
   setStatus('ツモ中...');
 }
@@ -1598,7 +1604,7 @@ function passToNext(fromIdx){
     const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
     if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
       setTimeout(()=>{
-        socket.emit("draw-tile", { roomId: G.roomId });
+        socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.turn });
       }, 600+Math.random()*400);
     }
   } else {
