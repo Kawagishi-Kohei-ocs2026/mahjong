@@ -133,6 +133,21 @@ io.on("connection", socket => {
     io.to(roomId).emit("room-update", toSeats(room));
   });
 
+  // ホストがCPUで空席を埋めた → 全員に同期
+  socket.on("fill-cpu", ({ roomId, names, slotTypes }) => {
+    const room = getRoom(roomId);
+    // CPUプレイヤーをroom.playersに追加（未登録のseatのみ）
+    for (let i = 0; i < 4; i++) {
+      if (slotTypes[i] === 'cpu') {
+        const exists = room.players.find(p => p.seatIdx === i);
+        if (!exists) {
+          room.players.push({ id: `cpu_${i}`, name: names[i], seatIdx: i, isCpu: true });
+        }
+      }
+    }
+    io.to(roomId).emit("room-update", toSeats(room));
+  });
+
   socket.on("start-game", ({ roomId, names, slotTypes }) => {
     const room = getRoom(roomId);
     room.started = true;
@@ -168,8 +183,7 @@ io.on("connection", socket => {
       honba: room.honba,
     });
 
-    // ✅ 開局直後にCPUが親ならツモ
-    setTimeout(() => handleCpuTurn(roomId), 600);
+    // 開局時のツモはクライアント（ホスト）が draw-tile で制御
   });
 
   socket.on("draw-tile", ({ roomId }) => {
@@ -217,8 +231,7 @@ io.on("connection", socket => {
       deckRemaining: room.deck.length,
     });
 
-    // ✅ 次がCPUならサーバーが即ツモ
-    setTimeout(() => handleCpuTurn(roomId), 600);
+    // 次のツモはクライアント（ホスト）が draw-tile で制御
   });
 
   socket.on("disconnect", () => {

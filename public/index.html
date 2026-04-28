@@ -219,7 +219,7 @@ socket.on('room-update', (seats) => {
   for (let i = 0; i < 4; i++) {
     if (seats[i]) {
       G.names[i] = seats[i].name;
-      G.slotTypes[i] = 'human';
+      G.slotTypes[i] = seats[i].isCpu ? 'cpu' : 'human';
       // 自分の席番号をsocket.idで特定
       if (seats[i].id === socket.id) G.myIdx = i;
     } else {
@@ -269,12 +269,15 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
     renderHand();
     enableMyActions();
     setStatus('牌を選んで切るか、和了を宣言してください');
-  } else {
+  } else if (G.slotTypes[playerIdx] === 'cpu') {
     setStatus(`${G.names[playerIdx]} がツモりました`);
-    // CPU席なら自動で切る
-    if (G.slotTypes[playerIdx] === 'cpu') {
+    // 最若番の人間プレイヤー（ホスト）だけがCPUアクションを実行
+    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
+    if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
       setTimeout(() => scheduleCPU(playerIdx), 800);
     }
+  } else {
+    setStatus(`${G.names[playerIdx]} がツモりました`);
   }
 });
 
@@ -865,6 +868,12 @@ function fillWithCPU(){
       cpuIdx++;
     }
   }
+  // サーバーとその他クライアントに通知
+  socket.emit("fill-cpu", {
+    roomId: G.roomId,
+    names: G.names,
+    slotTypes: G.slotTypes
+  });
   renderWaitPlayers();
   checkStartReady();
 }
@@ -966,6 +975,15 @@ function startGame(){
     G.phase = 'draw';
     setStatus('あなたのツモ番です（ツモボタンを押してください）');
     document.getElementById('btn-draw').disabled = false;
+  } else if (G.slotTypes[G.dealerIdx] === 'cpu') {
+    G.phase = 'draw';
+    setStatus(`${G.names[G.dealerIdx]} のツモ番です`);
+    disableAllActions();
+    // 最若番の人間プレイヤー（ホスト）がCPUのツモを代行
+    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
+    if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
+      setTimeout(() => socket.emit("draw-tile", { roomId: G.roomId }), 800);
+    }
   } else {
     G.phase = 'draw';
     setStatus(`${G.names[G.dealerIdx]} のツモ番です`);
@@ -1573,10 +1591,12 @@ function passToNext(fromIdx){
     setStatus('ツモ牌を引いてください');
     setTurnTxt(true);
   } else if(G.slotTypes[G.turn]==='cpu'){
-    // CPU席 → ホストだけがdraw-tileをサーバーに送る（席0が担当）
+    // CPU席 → 最初の人間プレイヤー（ホスト）がdraw-tileをサーバーに送る
     setTurnTxt(false);
     setStatus(`${G.names[G.turn]}のツモ番`);
-    if(G.myIdx===0){
+    // 自分が「最若番の人間プレイヤー」ならツモを代行
+    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
+    if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
       setTimeout(()=>{
         socket.emit("draw-tile", { roomId: G.roomId });
       }, 600+Math.random()*400);
