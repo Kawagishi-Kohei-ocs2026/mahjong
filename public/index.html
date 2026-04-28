@@ -997,53 +997,17 @@ function startGame(){
   }
 }
 
-function initRound(){
-  G.deck=shuffle(buildDeck());
-  G.hands=[[],[],[],[]];
-  G.melds=[[],[],[],[]];
-  G.discards=[[],[],[],[]];
-  G.riichi=[false,false,false,false];
-  G.riichiTile=[null,null,null,null];
-  G.drewTile=false;
-  G.selectedIdx=-1;
-  G.waitingTile=null;
-  G.waitingFrom=-1;
-  G.phase='dealing';
-
-  // Deal: each player gets 13 tiles; dealer gets 14th on first draw
-  for(let i=0;i<13;i++) for(let p=0;p<4;p++) G.hands[p].push(G.deck.pop());
-  G.hands.forEach(h=>h.sort(...[])); // keep deal order initially
-
-  // Dora indicator
-  G.dora=[G.deck.pop()];
-  G.uraDoraHidden=[G.deck.pop()];
-
-  updateHeader();
-  G.turn=G.dealerIdx;
-
-  if(G.dealerIdx===G.myIdx){
-    drawForPlayer(G.dealerIdx);
-  } else {
-    renderAll();
-    setStatus(`${G.names[G.dealerIdx]}のツモ番`);
-    setTimeout(()=>drawForPlayer(G.dealerIdx), 800);
-  }
-}
-
-function drawForPlayer(pidx){
-  if(G.deck.length===0){ ryukyoku(); return; }
-  const t=G.deck.pop();
-  G.hands[pidx].push(t);
-  G.drewTile=true;
-  G.phase='discard';
-
-  if(pidx===G.myIdx){
-    G.selectedIdx=G.hands[pidx].length-1;
-    renderAll();
-    enableMyActions();
-  } else {
-    renderAll();
-    scheduleCPU(pidx);
+// オンライン版: サーバーに次の局開始を要求する（ホストのみ送信）
+function requestNextRound(){
+  const humanSeats=[0,1,2,3].filter(i=>G.slotTypes[i]==='human');
+  if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
+    socket.emit("next-round", {
+      roomId: G.roomId,
+      dealerIdx: G.dealerIdx,
+      roundNum: G.roundNum,
+      scores: G.scores,
+      honba: G.honba,
+    });
   }
 }
 
@@ -1480,7 +1444,8 @@ function actionKan(){
   showLog(`${G.names[G.myIdx]}: カン！`,'me');
   renderAll();
   // Draw rinshan
-  drawForPlayer(G.myIdx);
+  // カン後のツモもサーバー経由
+  socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.myIdx });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1852,8 +1817,7 @@ function nextRound(){
   G.roundNum=Math.min(G.roundNum+1,7);
   G.dealerIdx=(G.dealerIdx+1)%4;
   G.honba=0;
-  updateHeader();
-  initRound();
+  requestNextRound();
 }
 
 // ═══════════════════════════════════════════════════════

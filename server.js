@@ -173,6 +173,29 @@ io.on("connection", socket => {
     });
   });
 
+  // 次の局開始（ホストが要求）
+  socket.on("next-round", ({ roomId, dealerIdx, roundNum, scores, honba }) => {
+    const room = getRoom(roomId);
+    if (!room) return;
+    room.dealerIdx = dealerIdx;
+    room.roundNum = roundNum;
+    room.scores = scores;
+    room.honba = honba;
+    serverInitRound(room);
+    io.to(roomId).emit("game-start", {
+      players: toSeats(room),
+      hands: room.hands,
+      deck: room.deck,
+      dora: room.dora,
+      uraDoraHidden: room.uraDoraHidden,
+      turn: room.turn,
+      dealerIdx: room.dealerIdx,
+      scores: room.scores,
+      roundNum: room.roundNum,
+      honba: room.honba,
+    });
+  });
+
   socket.on("disconnect", () => {
     console.log("切断:", socket.id);
     const roomId = socket.data.roomId;
