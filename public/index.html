@@ -259,17 +259,25 @@ socket.on('game-start', ({ players, hands, deck, dora, uraDoraHidden, turn, deal
 socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
   G.hands[playerIdx].push(tile);
   G.deck = { length: deckRemaining }; // デッキ残枚数だけ保持
-  G.drewTile = true;
-  G.phase = 'discard';
   G.turn = playerIdx;
-  renderAll();
 
   if (playerIdx === G.myIdx) {
-    G.selectedIdx = G.hands[G.myIdx].length - 1;
+    G.drewTile = true;
+    G.phase = 'discard';
+    G.selectedIdx = -1; // 選択リセット（後でenableMyActionsが最後の牌を選択）
+    renderAll();
+    // 最後の牌（ツモ牌）を選択状態にする
+    G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1;
     renderHand();
     enableMyActions();
     setStatus('牌を選んで切るか、和了を宣言してください');
+    setTurnTxt(true);
   } else if (G.slotTypes[playerIdx] === 'cpu') {
+    G.drewTile = false;
+    G.phase = 'discard';
+    renderAll();
+    disableAllActions();
+    setTurnTxt(false);
     setStatus(`${G.names[playerIdx]} がツモりました`);
     // 最若番の人間プレイヤー（ホスト）だけがCPUアクションを実行
     const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
@@ -277,6 +285,12 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
       setTimeout(() => scheduleCPU(playerIdx), 800);
     }
   } else {
+    // 他の人間プレイヤーのツモ
+    G.drewTile = false;
+    G.phase = 'discard';
+    renderAll();
+    disableAllActions();
+    setTurnTxt(false);
     setStatus(`${G.names[playerIdx]} がツモりました`);
   }
 });
@@ -286,13 +300,16 @@ socket.on('ryukyoku-server', () => {
 });
 
 socket.on('game-action', (data) => {
-  // 自分の捨て牌 or 自分が代行したCPU捨て牌は既にローカル処理済みなのでスキップ
+  // 自分自身が捨てた牌はローカル処理済みなのでスキップ
   if (data.playerIdx === G.myIdx) return;
+
+  // CPU席の捨て牌はホスト（最若番の人間）がローカル処理済みなのでホストはスキップ
   if (G.slotTypes[data.playerIdx] === 'cpu') {
-    // CPU捨て牌はホスト（最若番の人間）が送った→ホストはスキップ
     const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
-    if(humanSeats.length>0 && humanSeats[0]===G.myIdx) return;
+    if (humanSeats.length > 0 && humanSeats[0] === G.myIdx) return;
   }
+
+  // 上記以外（他人間プレイヤーの捨て牌 or 非ホストに届いたCPU捨て牌）は処理する
   handleRemoteAction(data);
 });
 
@@ -943,7 +960,8 @@ function handleRemoteAction(data){
     G.discards[pidx].push(tile);
     G.waitingTile = tile;
     G.waitingFrom = pidx;
-    G.turn = data.turn;
+    // サーバーから届いたturnを使う（なければ+1）
+    G.turn = data.turn !== undefined ? data.turn : (pidx + 1) % 4;
     G.phase = 'claim';
     G.drewTile = false;
 
@@ -1096,12 +1114,14 @@ function renderOpponents(){
       tileEl_.appendChild(d);
     }
 
-    // Discards
+    // Discards - 古い順（先頭が最初、末尾が最新）で表示
     const discEl=document.getElementById(`discard-${id}`);
     discEl.innerHTML='';
-    for(const t of G.discards[pidx]){
+    for(let di=0; di<G.discards[pidx].length; di++){
+      const t=G.discards[pidx][di];
       const d=document.createElement('div');
-      d.className=`tile td ${t.suit}`;
+      const isLatest=(di===G.discards[pidx].length-1);
+      d.className=`tile td ${t.suit}`+(isLatest?' suggest':'');
       d.textContent=tileText(t);
       discEl.appendChild(d);
     }
@@ -1124,17 +1144,17 @@ function renderOpponents(){
 }
 
 function renderCenter(){
-  // All discards combined (center area shows all players' last few discards)
+  // 中央には自分（myIdx）の捨て牌を古い順（最初→最新）で表示
   const cd=document.getElementById('center-discard');
   cd.innerHTML='';
-  // Show all discards interleaved
-  const allD=[];
-  for(let p=0;p<4;p++) for(const t of G.discards[p]) allD.push({t,p});
-  for(const {t,p} of allD){
+  const myDiscards=G.discards[G.myIdx]||[];
+  for(let di=0; di<myDiscards.length; di++){
+    const t=myDiscards[di];
     const d=document.createElement('div');
-    d.className=`tile td ${t.suit}`+(p===G.myIdx?' me':'');
+    const isLatest=(di===myDiscards.length-1);
+    d.className=`tile td ${t.suit}`+(isLatest?' suggest':'');
     d.textContent=tileText(t);
-    if(p===G.myIdx) d.style.borderColor='rgba(201,168,76,.5)';
+    d.style.borderColor='rgba(201,168,76,.5)';
     cd.appendChild(d);
   }
 
@@ -1245,7 +1265,7 @@ function actionDiscard(){
     roomId: G.roomId,
     data: {
       type: "discard",
-      player: G.myIdx,
+      playerIdx: G.myIdx,
       tile: discarded
     }
   });
