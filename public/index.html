@@ -236,12 +236,18 @@ socket.on('game-start', ({ players, hands, deck, dora, uraDoraHidden, turn, deal
   // 自分の席番号をsocket.idで特定
   const myServerIdx = players.findIndex(p => p && p.id === socket.id);
   if (myServerIdx !== -1) G.myIdx = myServerIdx;
+
+  // 全席のnames/slotTypesをサーバーデータで上書き（nullも含めて完全同期）
   for (let i = 0; i < 4; i++) {
     if (players[i]) {
       G.names[i] = players[i].name;
       G.slotTypes[i] = players[i].isCpu ? 'cpu' : 'human';
+    } else {
+      G.names[i] = '';
+      G.slotTypes[i] = null;
     }
   }
+
   // サーバーから受け取った盤面状態をセット
   G.hands        = hands;
   G.deck         = deck;
@@ -258,36 +264,33 @@ socket.on('game-start', ({ players, hands, deck, dora, uraDoraHidden, turn, deal
 // ── ツモ牌が届いた（全員に通知） ──
 socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
   G.hands[playerIdx].push(tile);
-  G.deck = { length: deckRemaining }; // デッキ残枚数だけ保持
+  G.deck = { length: deckRemaining };
   G.turn = playerIdx;
+  G.phase = 'discard';
 
   if (playerIdx === G.myIdx) {
+    // 自分のツモ
     G.drewTile = true;
-    G.phase = 'discard';
-    G.selectedIdx = -1; // 選択リセット（後でenableMyActionsが最後の牌を選択）
+    G.selectedIdx = -1;
     renderAll();
-    // 最後の牌（ツモ牌）を選択状態にする
     G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1;
     renderHand();
     enableMyActions();
     setStatus('牌を選んで切るか、和了を宣言してください');
     setTurnTxt(true);
   } else if (G.slotTypes[playerIdx] === 'cpu') {
+    // CPUのツモ → ホストがCPUアクションを実行
     G.drewTile = false;
-    G.phase = 'discard';
     renderAll();
     disableAllActions();
     setTurnTxt(false);
     setStatus(`${G.names[playerIdx]} がツモりました`);
-    // 最若番の人間プレイヤー（ホスト）だけがCPUアクションを実行
-    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
-    if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
+    if(isHost()){
       setTimeout(() => scheduleCPU(playerIdx), 800);
     }
   } else {
-    // 他の人間プレイヤーのツモ
+    // 他の人間プレイヤーのツモ → 向こうが判断する
     G.drewTile = false;
-    G.phase = 'discard';
     renderAll();
     disableAllActions();
     setTurnTxt(false);
@@ -304,12 +307,9 @@ socket.on('game-action', (data) => {
   if (data.playerIdx === G.myIdx) return;
 
   // CPU席の捨て牌はホスト（最若番の人間）がローカル処理済みなのでホストはスキップ
-  if (G.slotTypes[data.playerIdx] === 'cpu') {
-    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
-    if (humanSeats.length > 0 && humanSeats[0] === G.myIdx) return;
-  }
+  if (G.slotTypes[data.playerIdx] === 'cpu' && isHost()) return;
 
-  // 上記以外（他人間プレイヤーの捨て牌 or 非ホストに届いたCPU捨て牌）は処理する
+  // 上記以外（他の人間プレイヤーの捨て牌 or 非ホストに届いたCPU捨て牌）は処理する
   handleRemoteAction(data);
 });
 
@@ -969,8 +969,35 @@ function handleRemoteAction(data){
     showLog(`${G.names[pidx]}: ${tileText(tile)} を捨てた`);
     setStatus(`${G.names[pidx]} が ${tileText(tile)} を切りました`);
 
-    // 自分が鳴けるか・ロンできるかチェック
-    setTimeout(() => checkClaims(pidx, tile), 400);
+    // ロン可能かを自分用にチェック（ボタン有効化）
+    setTimeout(() => checkMyClaimsOnly(pidx, tile), 400);
+
+    // ホストはCPUクレームとターン進行も担当
+    if(isHost()){
+      setTimeout(() => checkClaims(pidx, tile), 400);
+    }
+  }
+}
+
+// 自分のロンボタン有効化のみ（ターン進行なし）
+function checkMyClaimsOnly(fromIdx, tile){
+  const handPlus=[...G.hands[G.myIdx], tile];
+  const wins=findWins(handPlus);
+  if(wins.length>0){
+    const ctx=buildCtx(G.myIdx,false);
+    const yakuList=calcYaku(wins[0],ctx);
+    if(yakuList.length>0){
+      G.waitingTile=tile;
+      G.waitingFrom=fromIdx;
+      document.getElementById('btn-ron').disabled=false;
+      setStatus(`ロン可能！ (${tileText(tile)})`);
+      G.ronTimeout=setTimeout(()=>{
+        if(G.phase==='claim'){
+          document.getElementById('btn-ron').disabled=true;
+          G.waitingTile=null;
+        }
+      },5000);
+    }
   }
 }
 
@@ -978,8 +1005,9 @@ function handleRemoteAction(data){
 //  GAME INIT
 // ═══════════════════════════════════════════════════════
 function startGame(){
-  // リセット（サーバーからのデータは game-start で既にセット済み）
+  // リセット
   G.melds        = [[], [], [], []];
+  G.discards     = [[], [], [], []];
   G.riichi       = [false, false, false, false];
   G.riichiTile   = [null, null, null, null];
   G.riichiSticks = 0;
@@ -987,38 +1015,47 @@ function startGame(){
   G.selectedIdx  = -1;
   G.waitingTile  = null;
   G.waitingFrom  = -1;
-  G.phase        = 'dealing';
+  G.phase        = 'draw';
 
   showScreen('screen-game');
   document.getElementById('screen-game').classList.add('active');
   updateHeader();
+  disableAllActions();
   renderAll();
 
-  // 自分がディーラーならツモボタンを有効化、そうでなければ待機
-  if (G.dealerIdx === G.myIdx) {
-    G.phase = 'draw';
-    setStatus('あなたのツモ番です（ツモボタンを押してください）');
+  kickoffTurn(G.dealerIdx);
+}
+
+// ターン開始を一元管理
+function kickoffTurn(seatIdx){
+  G.turn = seatIdx;
+  G.phase = 'draw';
+
+  if(seatIdx === G.myIdx){
     document.getElementById('btn-draw').disabled = false;
-  } else if (G.slotTypes[G.dealerIdx] === 'cpu') {
-    G.phase = 'draw';
-    setStatus(`${G.names[G.dealerIdx]} のツモ番です`);
-    disableAllActions();
-    // 最若番の人間プレイヤー（ホスト）がCPUのツモを代行
-    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
-    if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
-      setTimeout(() => socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.dealerIdx }), 800);
+    setStatus('ツモ牌を引いてください');
+    setTurnTxt(true);
+  } else if(G.slotTypes[seatIdx] === 'cpu'){
+    setTurnTxt(false);
+    setStatus(`${G.names[seatIdx]} のツモ番`);
+    if(isHost()){
+      setTimeout(() => socket.emit("draw-tile", { roomId: G.roomId, forSeat: seatIdx }), 600+Math.random()*400);
     }
   } else {
-    G.phase = 'draw';
-    setStatus(`${G.names[G.dealerIdx]} のツモ番です`);
-    disableAllActions();
+    setTurnTxt(false);
+    setStatus(`${G.names[seatIdx]} のツモ番`);
   }
+}
+
+// ホスト判定: 最若番の人間プレイヤーが自分か
+function isHost(){
+  const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
+  return humanSeats.length > 0 && humanSeats[0] === G.myIdx;
 }
 
 // オンライン版: サーバーに次の局開始を要求する（ホストのみ送信）
 function requestNextRound(){
-  const humanSeats=[0,1,2,3].filter(i=>G.slotTypes[i]==='human');
-  if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
+  if(isHost()){
     socket.emit("next-round", {
       roomId: G.roomId,
       dealerIdx: G.dealerIdx,
@@ -1279,8 +1316,12 @@ function actionDiscard(){
   showLog(`${G.names[G.myIdx]}: ${tileText(discarded)} を捨てた`,'me');
   renderAll();
   
-  // Check if anyone can claim
-  setTimeout(()=>checkClaims(G.myIdx, discarded), 400);
+  // ホストは自分が捨てた後もCPUクレームとターン進行を担当
+  // 非ホストはホストがdraw-tileを送るのを待つ（ロンのみ自分でチェック）
+  if(isHost()){
+    setTimeout(()=>checkClaims(G.myIdx, discarded), 400);
+  }
+  // 自分がロンされることはないので追加チェック不要
 }
 
 function actionTsumo(){
@@ -1506,28 +1547,33 @@ function checkClaims(fromIdx, tile){
   
   // Handle ron first
   if(ronPlayers.length>0){
-    // Check if MY ron
+    // 自分がロンできるか
     const myRon=ronPlayers.find(r=>r.p===G.myIdx);
     if(myRon){
       G.waitingTile=tile;
       G.waitingFrom=fromIdx;
       document.getElementById('btn-ron').disabled=false;
       setStatus(`ロン！ (${tileText(tile)})`);
-      // CPU rons
-      const cpuRon=ronPlayers.find(r=>r.p!==G.myIdx);
-      if(!cpuRon) return; // wait for player decision
+      // CPUのロンがなければプレイヤーの判断を待つ
+      const cpuRon=ronPlayers.find(r=>r.p!==G.myIdx && G.slotTypes[r.p]==='cpu');
+      if(!cpuRon) return;
     }
-    // CPU ron
-    for(const {p,wins,yakuList} of ronPlayers){
-      if(p===G.myIdx) continue;
-      const pts=calcPoints(yakuList,wins[0],false);
-      const pay=calcPayment(pts,false,p===G.dealerIdx);
-      G.scores[p]+=pay.totalGain+G.riichiSticks*1000;
-      G.scores[fromIdx]-=pay.ron;
-      G.riichiSticks=0;
-      showResultOverlay('ロン！',G.names[fromIdx]+'の捨て牌でロン('+G.names[p]+')',yakuList,pay.totalGain,wins[0]);
-      return;
+    // CPUのロン → ホストのみ処理
+    if(isHost()){
+      for(const {p,wins,yakuList} of ronPlayers){
+        if(p===G.myIdx) continue;
+        if(G.slotTypes[p]!=='cpu') continue;
+        const pts=calcPoints(yakuList,wins[0],false);
+        const pay=calcPayment(pts,false,p===G.dealerIdx);
+        G.scores[p]+=pay.totalGain+G.riichiSticks*1000;
+        G.scores[fromIdx]-=pay.ron;
+        G.riichiSticks=0;
+        showResultOverlay('ロン！',G.names[fromIdx]+'の捨て牌でロン('+G.names[p]+')',yakuList,pay.totalGain,wins[0]);
+        return;
+      }
     }
+    if(myRon) return; // 自分のロン待ち中
+    passToNext(fromIdx);
     return;
   }
   
@@ -1535,74 +1581,63 @@ function checkClaims(fromIdx, tile){
   const myPon=ponPlayers.includes(G.myIdx);
   const myChi=chiPlayer===G.myIdx;
   
-  // CPU pon (random chance 40%)
-  for(const p of ponPlayers){
-    if(p===G.myIdx) continue;
-    if(Math.random()<0.4){
-      cpuPon(p,tile,fromIdx);
+  // CPU pon (random chance 40%) - ホストのみ処理
+  if(isHost()){
+    for(const p of ponPlayers){
+      if(p===G.myIdx) continue;
+      if(G.slotTypes[p]==='cpu'&&Math.random()<0.4){
+        cpuPon(p,tile,fromIdx);
+        return;
+      }
+    }
+    // CPU chi (random chance 30%)
+    if(chiPlayer>=0&&chiPlayer!==G.myIdx&&G.slotTypes[chiPlayer]==='cpu'&&Math.random()<0.3){
+      cpuChi(chiPlayer,tile);
       return;
     }
   }
   
-  // CPU chi (random chance 30%)
-  if(chiPlayer>=0&&chiPlayer!==G.myIdx&&Math.random()<0.3){
-    cpuChi(chiPlayer,tile);
-    return;
-  }
-  
-  // Show player options
+  // 自分（人間）のポン/チーオプションを表示
   G.waitingTile=tile;
   G.waitingFrom=fromIdx;
   if(myPon) document.getElementById('btn-pon').disabled=false;
   if(myChi) document.getElementById('btn-chi').disabled=false;
   if(myPon||myChi){
     setStatus(`${tileText(tile)} を鳴きますか？`);
-    // Auto-pass after 2s
+    // 2秒後に自動パス（ホストのみターン進行）
     setTimeout(()=>{
-      if(G.phase==='claim'){
+      if(G.phase==='claim' && isHost()){
         passToNext(fromIdx);
+      } else if(G.phase==='claim' && !isHost()){
+        // 非ホスト: パスしたら自分のUI状態だけ戻す、ターン進行はホスト待ち
+        G.waitingTile=null;
+        document.getElementById('btn-pon').disabled=true;
+        document.getElementById('btn-chi').disabled=true;
       }
     },2000);
     return;
   }
-  
-  passToNext(fromIdx);
+
+  // ホストのみpassToNextでターンを進める
+  // 非ホスト人間プレイヤーはホストが送るdraw-tileを待つ
+  if(isHost()){
+    passToNext(fromIdx);
+  }
 }
 
 function passToNext(fromIdx){
   G.waitingTile=null;
   G.waitingFrom=-1;
-  G.turn=(fromIdx+1)%4;
-  G.phase='draw';
   disableAllActions();
-
-  if(G.turn===G.myIdx){
-    // 自分のツモ番 → ツモボタンを有効化
-    document.getElementById('btn-draw').disabled=false;
-    setStatus('ツモ牌を引いてください');
-    setTurnTxt(true);
-  } else if(G.slotTypes[G.turn]==='cpu'){
-    // CPU席 → 最初の人間プレイヤー（ホスト）がdraw-tileをサーバーに送る
-    setTurnTxt(false);
-    setStatus(`${G.names[G.turn]}のツモ番`);
-    // 自分が「最若番の人間プレイヤー」ならツモを代行
-    const humanSeats = [0,1,2,3].filter(i => G.slotTypes[i]==='human');
-    if(humanSeats.length>0 && humanSeats[0]===G.myIdx){
-      setTimeout(()=>{
-        socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.turn });
-      }, 600+Math.random()*400);
-    }
-  } else {
-    // 他の人間プレイヤーのツモ番 → 向こうが draw-tile を送る
-    setTurnTxt(false);
-    setStatus(`${G.names[G.turn]}のツモ番`);
-  }
+  const nextSeat=(fromIdx+1)%4;
+  kickoffTurn(nextSeat);
 }
 
 // ═══════════════════════════════════════════════════════
 //  CPU LOGIC
 // ═══════════════════════════════════════════════════════
 function scheduleCPU(pidx){
+  if(!isHost()) return; // ホストのみCPUを動かす
   clearTimeout(G.cpuTimer);
   G.cpuTimer=setTimeout(()=>cpuAction(pidx), 800+Math.random()*600);
 }
