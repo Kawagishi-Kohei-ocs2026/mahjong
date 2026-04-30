@@ -117,7 +117,7 @@ input::placeholder{color:rgba(245,240,232,.3)}
 .tile.back{background:linear-gradient(135deg,#2a5c3c,#183d26);border-color:rgba(201,168,76,.35);cursor:default}
 .tile.selected{transform:translateY(-8px);box-shadow:0 8px 16px rgba(201,168,76,.6);border-color:var(--gold)}
 .tile.suggest{border-color:#e74c3c;box-shadow:0 0 8px rgba(231,76,60,.5)}
-.tile.riichi-tile{opacity:.7;cursor:not-allowed}
+.tile.riichi-tile{}
 .tile.last-draw{animation:drawAnim .25s ease}
 @keyframes drawAnim{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
 
@@ -1002,6 +1002,16 @@ function handleRemoteAction(data){
     }
   }
 
+  // ── リーチ ──
+  if(data.type==='riichi'){
+    G.riichi[pidx]=true;
+    G.riichiSticks++;
+    G.scores[pidx]-=1000;
+    showLog(`${G.names[pidx]}: リーチ！`);
+    renderScores();
+    renderCenter();
+  }
+
   // ── ポン・チー・カン（他プレイヤーが鳴いた）──
   if(data.type==='pon' || data.type==='chi' || data.type==='kan'){
     G.melds[pidx] = G.melds[pidx] || [];
@@ -1429,6 +1439,12 @@ function actionRiichi(){
   G.riichiTile[G.myIdx]=hand[G.selectedIdx];
   showLog(`${G.names[G.myIdx]}: リーチ！`,'me');
   
+  // 全員にリーチを通知
+  socket.emit("game-action", {
+    roomId: G.roomId,
+    data: { type:"riichi", playerIdx:G.myIdx }
+  });
+  
   // Discard
   actionDiscard();
   renderScores();
@@ -1597,12 +1613,12 @@ function checkClaims(fromIdx, tile){
       if(yakuList.length>0) ronPlayers.push({p,wins,yakuList});
     }
     
-    // Pon check (need 2 in hand)
+    // Pon check (need 2 in hand、リーチ中は不可)
     const matchCount=G.hands[p].filter(x=>tileKey(x)===tileKey(tile)).length;
-    if(matchCount>=2) ponPlayers.push(p);
+    if(matchCount>=2 && !G.riichi[p]) ponPlayers.push(p);
     
-    // Chi check (only left player = fromIdx+1)
-    if(p===(fromIdx+1)%4&&tile.suit!=='honor'){
+    // Chi check (only left player = fromIdx+1、リーチ中は不可)
+    if(p===(fromIdx+1)%4&&tile.suit!=='honor'&&!G.riichi[p]){
       const chiSets=findChiSets(G.hands[p],tile);
       if(chiSets.length>0) chiPlayer=p;
     }
@@ -1741,6 +1757,11 @@ function cpuAction(pidx){
         G.scores[pidx]-=1000;
         G.riichiSticks++;
         showLog(`${G.names[pidx]}: リーチ！`);
+        // 全員にリーチを通知
+        socket.emit("game-action", {
+          roomId: G.roomId,
+          data: { type:"riichi", playerIdx:pidx }
+        });
         cpuDiscard(pidx,hand[i]);
         return;
       }

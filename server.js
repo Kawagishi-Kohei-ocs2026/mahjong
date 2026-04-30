@@ -175,6 +175,12 @@ io.on("connection", socket => {
       room.turn = playerIdx;
     }
 
+    if (data.type === "riichi") {
+      // リーチ状態をサーバーで記録（次局リセット時に参照しないが念のため）
+      if (!room.riichi) room.riichi = [false,false,false,false];
+      room.riichi[playerIdx] = true;
+    }
+
     io.to(roomId).emit("game-action", {
       ...data,
       playerIdx,
