@@ -288,7 +288,15 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
   if (playerIdx === G.myIdx) {
     // 自分のツモ
     G.drewTile = true;
-    G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1; // ツモ牌（末尾）を初期選択
+    // ツモ牌は G.hands[myIdx] の末尾に push されている
+    // sortHand後でも同じオブジェクト参照で位置を特定する
+    const drewTileObj = G.hands[G.myIdx][G.hands[G.myIdx].length - 1];
+    const sorted = sortHand(G.hands[G.myIdx]);
+    // 同じsuit+nが複数ある場合もcopyで一意に区別
+    G.selectedIdx = sorted.findIndex(t =>
+      t.suit === drewTileObj.suit && t.n === drewTileObj.n && t.copy === drewTileObj.copy
+    );
+    if (G.selectedIdx < 0) G.selectedIdx = sorted.length - 1; // fallback
     renderAll();
     enableMyActions();
     document.getElementById('btn-discard').disabled = false; // 初期選択済みなので即有効
