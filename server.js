@@ -155,8 +155,9 @@ io.on("connection", socket => {
   socket.on("game-action", ({ roomId, data }) => {
     const room = getRoom(roomId);
     if (!room) return;
-    const player = room.players.find(p => p.id === socket.id);
-    const playerIdx = player?.seatIdx ?? data.playerIdx;
+    // data.playerIdx を正として使う（CPUの捨て牌はホストのsocketから送られるため
+    // socket.idでseatを引くとホストの席番号になってしまう）
+    const playerIdx = data.playerIdx;
 
     if (data.type === "discard") {
       const idx = room.hands[playerIdx]?.findIndex(t => tileKey(t) === tileKey(data.tile));
