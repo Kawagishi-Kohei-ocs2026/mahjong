@@ -1001,7 +1001,24 @@ function handleRemoteAction(data){
       setTimeout(() => checkClaims(pidx, tile), 400);
     }
   }
-}
+
+  // ── ポン・チー・カン（他プレイヤーが鳴いた）──
+  if(data.type==='pon' || data.type==='chi' || data.type==='kan'){
+    G.melds[pidx] = G.melds[pidx] || [];
+    G.melds[pidx].push({type:data.type, tiles:data.tiles});
+    // 手牌からmeldの牌を除く（鳴いた牌を手牌から削除）
+    for(const t of data.tiles){
+      const idx=G.hands[pidx]?.findIndex(x=>tileKey(x)===tileKey(t));
+      if(idx>=0) G.hands[pidx].splice(idx,1);
+    }
+    G.waitingTile=null;
+    G.turn=pidx;
+    G.phase='discard';
+    const typeLabel={pon:'ポン',chi:'チー',kan:'カン'}[data.type];
+    showLog(`${G.names[pidx]}: ${typeLabel}！`);
+    renderAll();
+    setStatus(`${G.names[pidx]} が ${typeLabel}しました`);
+  }
 
 // 自分のロンボタン有効化のみ（ターン進行なし）
 function checkMyClaimsOnly(fromIdx, tile){
@@ -1433,13 +1450,20 @@ function actionPon(){
     return true;
   });
   
+  const meldTiles=[t,matches[0],matches[1]];
   // Add meld
-  G.melds[G.myIdx].push({type:'pon',tiles:[t,matches[0],matches[1]]});
+  G.melds[G.myIdx].push({type:'pon',tiles:meldTiles});
   G.waitingTile=null;
   G.turn=G.myIdx;
   G.phase='discard';
   G.drewTile=false;
   G.selectedIdx=-1;
+  
+  // 全員に通知
+  socket.emit("game-action", {
+    roomId: G.roomId,
+    data: { type:"pon", playerIdx:G.myIdx, tiles:meldTiles }
+  });
   
   disableAllActions();
   document.getElementById('btn-discard').disabled=false;
@@ -1512,6 +1536,12 @@ function executeChi(set){
   G.phase='discard';
   G.drewTile=false;
   G.selectedIdx=-1;
+  
+  // 全員に通知
+  socket.emit("game-action", {
+    roomId: G.roomId,
+    data: { type:"chi", playerIdx:G.myIdx, tiles:set }
+  });
   
   disableAllActions();
   document.getElementById('btn-discard').disabled=false;
@@ -1785,10 +1815,17 @@ function cpuPon(pidx,tile,fromIdx){
     if(removed<2&&tileKey(x)===tileKey(tile)){removed++;return false;}
     return true;
   });
-  G.melds[pidx].push({type:'pon',tiles:[tile,tile,tile]});
+  const meldTiles=[tile,tile,tile];
+  G.melds[pidx].push({type:'pon',tiles:meldTiles});
   G.waitingTile=null;
   G.turn=pidx;
   G.phase='discard';
+  
+  // 全員に通知
+  socket.emit("game-action", {
+    roomId: G.roomId,
+    data: { type:"pon", playerIdx:pidx, tiles:meldTiles }
+  });
   
   showLog(`${G.names[pidx]}: ポン！`);
   renderAll();
@@ -1809,6 +1846,12 @@ function cpuChi(pidx,tile){
   G.waitingTile=null;
   G.turn=pidx;
   G.phase='discard';
+  
+  // 全員に通知
+  socket.emit("game-action", {
+    roomId: G.roomId,
+    data: { type:"chi", playerIdx:pidx, tiles:set }
+  });
   
   showLog(`${G.names[pidx]}: チー！`);
   renderAll();

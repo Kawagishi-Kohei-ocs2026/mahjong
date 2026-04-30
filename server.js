@@ -166,6 +166,15 @@ io.on("connection", socket => {
       room.turn = (playerIdx + 1) % 4;
     }
 
+    if (data.type === "pon" || data.type === "chi" || data.type === "kan") {
+      // 鳴いた牌をサーバーの手牌からも除去
+      for (const t of (data.tiles || [])) {
+        const idx = room.hands[playerIdx]?.findIndex(x => tileKey(x) === tileKey(t));
+        if (idx >= 0) room.hands[playerIdx].splice(idx, 1);
+      }
+      room.turn = playerIdx;
+    }
+
     io.to(roomId).emit("game-action", {
       ...data,
       playerIdx,
