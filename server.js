@@ -196,6 +196,20 @@ io.on("connection", socket => {
     });
   });
 
+  // 和了・流局をサーバー経由で全員に同期
+  socket.on("broadcast-result", ({ roomId, data }) => {
+    io.to(roomId).emit("broadcast-result", data);
+  });
+
+  // クレームパス（次ターンへ）をサーバー経由で全員に同期
+  socket.on("claim-pass", ({ roomId, fromIdx }) => {
+    const room = getRoom(roomId);
+    if (!room) return;
+    const nextSeat = (fromIdx + 1) % 4;
+    room.turn = nextSeat;
+    io.to(roomId).emit("claim-pass", { fromIdx, nextSeat });
+  });
+
   socket.on("disconnect", () => {
     console.log("切断:", socket.id);
     const roomId = socket.data.roomId;

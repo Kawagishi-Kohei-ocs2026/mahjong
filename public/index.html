@@ -263,8 +263,12 @@ socket.on('game-start', ({ players, hands, deck, dora, uraDoraHidden, turn, deal
 
 // ── ツモ牌が届いた（全員に通知） ──
 socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
+  // サーバーが正しい手牌を持っているので、クライアントはサーバー通知で追加する
+  // （二重追加を防ぐため、自分自身も含めてここでpushする）
   G.hands[playerIdx].push(tile);
-  G.deck = { length: deckRemaining };
+  // deckはlengthだけ追跡（配列操作はサーバー側が担う）
+  if (!Array.isArray(G.deck)) G.deck = [];
+  G.deck.length = deckRemaining;
   G.turn = playerIdx;
   G.phase = 'discard';
 
@@ -303,14 +307,34 @@ socket.on('ryukyoku-server', () => {
 });
 
 socket.on('game-action', (data) => {
-  // 自分自身が捨てた牌はローカル処理済みなのでスキップ
+  // ホストが自分で送った捨て牌はローカル処理済み → スキップ
   if (data.playerIdx === G.myIdx) return;
 
-  // CPU席の捨て牌はホスト（最若番の人間）がローカル処理済みなのでホストはスキップ
+  // ホストが自分で送ったCPU捨て牌はローカル処理済み → スキップ
   if (G.slotTypes[data.playerIdx] === 'cpu' && isHost()) return;
 
-  // 上記以外（他の人間プレイヤーの捨て牌 or 非ホストに届いたCPU捨て牌）は処理する
+  // 上記以外（他の人間プレイヤーの捨て牌 or 非ホストへ届いたCPU捨て牌）
   handleRemoteAction(data);
+});
+
+// サーバー経由の結果同期（ロン・ツモ）
+socket.on('broadcast-result', (data) => {
+  // スコアを同期してからオーバーレイを表示
+  G.scores = data.scores;
+  G.riichiSticks = data.riichiSticks;
+  // ホストは既にshowResultOverlayを呼んでいるのでスキップ
+  if (isHost()) return;
+  showResultOverlay(data.title, data.winner, data.yakuList, data.pts, null);
+});
+
+// サーバー経由のターン進行同期
+socket.on('claim-pass', ({ fromIdx, nextSeat }) => {
+  // ホストは既にpassToNextを呼んでいるのでスキップ
+  if (isHost()) return;
+  G.waitingTile = null;
+  G.waitingFrom = -1;
+  disableAllActions();
+  kickoffTurn(nextSeat);
 });
 
 socket.on('room-full', () => {
@@ -1017,6 +1041,15 @@ function startGame(){
   G.waitingFrom  = -1;
   G.phase        = 'draw';
 
+  // サーバーから受け取った deck は配列だが、クライアントはlengthだけ追跡する
+  // 配列の実体はサーバーが持ち、クライアントはlengthプロキシを使う
+  if(Array.isArray(G.deck)){
+    // game-startで配列が来た場合はlength追跡用オブジェクトに変換
+    const len = G.deck.length;
+    G.deck = [];
+    G.deck.length = len;
+  }
+
   showScreen('screen-game');
   document.getElementById('screen-game').classList.add('active');
   updateHeader();
@@ -1195,7 +1228,7 @@ function renderCenter(){
     cd.appendChild(d);
   }
 
-  document.getElementById('deck-cnt').textContent=G.deck.length;
+  document.getElementById('deck-cnt').textContent=Array.isArray(G.deck)?G.deck.length:(G.deck.length||0);
 
   // Riichi sticks
   const rs=document.getElementById('riichi-sticks');
@@ -1275,9 +1308,9 @@ function selectTile(i){
 
 function actionDraw(){
   if(G.turn!==G.myIdx||G.phase!=='draw') return;
-  // サーバーにツモ要求を送る（forSeat省略＝自分の席）
+  // サーバーにツモ要求を送る。tile-drawnイベントで全員の手牌が更新される
   socket.emit("draw-tile", { roomId: G.roomId, forSeat: G.myIdx });
-  disableAllActions();
+  document.getElementById('btn-draw').disabled = true;
   setStatus('ツモ中...');
 }
 
@@ -1499,8 +1532,9 @@ function actionKan(){
   G.hands[G.myIdx]=hand.filter(t=>tileKey(t)!==kanKey);
   G.melds[G.myIdx].push({type:'kan',tiles});
   
-  // Add dora
-  if(G.deck.length>0) G.dora.push(G.deck.pop());
+  // Add dora (サーバー側のdeck管理に合わせ、ドラはgame-startで受け取る分のみ管理)
+  // カン後のドラ追加はサーバーへdraw-tileを送った後、tile-drawnで来る牌の前にドラが増える
+  // ここではローカルのdora配列は変えず、サーバーに任せる
   
   showLog(`${G.names[G.myIdx]}: カン！`,'me');
   renderAll();
@@ -1597,29 +1631,26 @@ function checkClaims(fromIdx, tile){
     }
   }
   
-  // 自分（人間）のポン/チーオプションを表示
   G.waitingTile=tile;
   G.waitingFrom=fromIdx;
   if(myPon) document.getElementById('btn-pon').disabled=false;
   if(myChi) document.getElementById('btn-chi').disabled=false;
   if(myPon||myChi){
     setStatus(`${tileText(tile)} を鳴きますか？`);
-    // 2秒後に自動パス（ホストのみターン進行）
+    // 2秒後に自動パス
     setTimeout(()=>{
-      if(G.phase==='claim' && isHost()){
-        passToNext(fromIdx);
-      } else if(G.phase==='claim' && !isHost()){
-        // 非ホスト: パスしたら自分のUI状態だけ戻す、ターン進行はホスト待ち
-        G.waitingTile=null;
+      if(G.phase==='claim'){
         document.getElementById('btn-pon').disabled=true;
         document.getElementById('btn-chi').disabled=true;
+        G.waitingTile=null;
+        // ホストのみサーバーへpass通知してターン進行
+        if(isHost()) passToNext(fromIdx);
       }
     },2000);
     return;
   }
 
   // ホストのみpassToNextでターンを進める
-  // 非ホスト人間プレイヤーはホストが送るdraw-tileを待つ
   if(isHost()){
     passToNext(fromIdx);
   }
@@ -1630,6 +1661,8 @@ function passToNext(fromIdx){
   G.waitingFrom=-1;
   disableAllActions();
   const nextSeat=(fromIdx+1)%4;
+  // ホストがサーバー経由で全員にターン進行を通知
+  socket.emit("claim-pass", { roomId: G.roomId, fromIdx });
   kickoffTurn(nextSeat);
 }
 
@@ -1869,10 +1902,15 @@ function ryukyoku(){
 function nextRound(){
   hideOverlay('ov-result');
   hideOverlay('ov-ryukyoku');
+  // ディーラーが上がった場合は連荘（dealerIdxそのまま）、それ以外は親を移す
+  // ここでは単純に次の局へ（dealer rotation はrequestNextRoundで処理）
   G.roundNum=Math.min(G.roundNum+1,7);
   G.dealerIdx=(G.dealerIdx+1)%4;
   G.honba=0;
-  requestNextRound();
+  // ホストのみサーバーへ通知。非ホストはgame-startイベントを待つ
+  if(isHost()){
+    requestNextRound();
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1882,6 +1920,14 @@ function showResultOverlay(title,winner,yakuList,pts,decomp){
   G.phase='end';
   clearTimeout(G.cpuTimer);
   disableAllActions();
+  
+  // ホストが結果をサーバー経由で全員に同期
+  if(isHost()&&decomp!==null){
+    socket.emit("broadcast-result", {
+      roomId: G.roomId,
+      data: { title, winner, yakuList, pts, scores: G.scores, riichiSticks: G.riichiSticks }
+    });
+  }
   
   document.getElementById('res-title').textContent=title;
   document.getElementById('res-winner').textContent=winner;
