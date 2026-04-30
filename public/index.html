@@ -140,6 +140,19 @@ input::placeholder{color:rgba(245,240,232,.3)}
 .riichi-stick{width:48px;height:5px;background:linear-gradient(to right,#f5f0e8,#ddd);border-radius:3px;
   box-shadow:0 1px 3px rgba(0,0,0,.4);display:inline-block;position:relative}
 .riichi-stick::after{content:'●';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#c0392b;font-size:5px}
+/* プレイヤーごとのリーチ棒 */
+.riichi-stick-player{display:inline-block;position:relative;border-radius:3px;
+  background:linear-gradient(to right,#f5f0e8,#ddd);
+  box-shadow:0 1px 3px rgba(0,0,0,.5)}
+.riichi-stick-player::after{content:'●';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#c0392b;font-size:5px}
+/* 自分（下）: 横棒 */
+.riichi-bar-bottom{width:52px;height:6px;margin:2px auto 0}
+/* 上（対面）: 横棒 */
+.riichi-bar-top{width:52px;height:6px;margin:0 auto 2px}
+/* 左: 縦棒 */
+.riichi-bar-left{width:6px;height:40px;margin:0 2px 0 0}
+/* 右: 縦棒 */
+.riichi-bar-right{width:6px;height:40px;margin:0 0 0 2px}
 
 /* MELD AREA */
 .meld-row{display:flex;gap:4px;justify-content:center;flex-wrap:wrap;min-height:0}
@@ -275,11 +288,10 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
   if (playerIdx === G.myIdx) {
     // 自分のツモ
     G.drewTile = true;
-    G.selectedIdx = -1;
+    G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1; // ツモ牌（末尾）を初期選択
     renderAll();
-    G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1;
-    renderHand();
     enableMyActions();
+    document.getElementById('btn-discard').disabled = false; // 初期選択済みなので即有効
     setStatus('牌を選んで切るか、和了を宣言してください');
     setTurnTxt(true);
   } else if (G.slotTypes[playerIdx] === 'cpu') {
@@ -313,6 +325,13 @@ socket.on('game-action', (data) => {
   // ホストが自分で送ったCPU捨て牌はローカル処理済み → スキップ
   if (G.slotTypes[data.playerIdx] === 'cpu' && isHost()) return;
 
+  // 鳴きアクション（pon/chi/kan）を受信したらホスト側もclaim状態をリセット
+  if((data.type==='pon'||data.type==='chi'||data.type==='kan') && isHost()){
+    G.waitingTile=null;
+    G.waitingFrom=-1;
+    // passToNextは不要（鳴いた側がdiscardしてから進む）
+  }
+
   // 上記以外（他の人間プレイヤーの捨て牌 or 非ホストへ届いたCPU捨て牌）
   handleRemoteAction(data);
 });
@@ -339,6 +358,14 @@ socket.on('claim-pass', ({ fromIdx, nextSeat }) => {
 
 socket.on('room-full', () => {
   alert('この部屋は満員です（4人）。');
+});
+
+// 非ホストからのパス通知（ホストのみ受信）
+socket.on('player-pass', ({ fromIdx }) => {
+  if(!isHost()) return;
+  if(G.phase==='claim'){
+    passToNext(fromIdx);
+  }
 });
 </script>
 
@@ -401,9 +428,11 @@ socket.on('room-full', () => {
       <div class="opp-tiles-row" id="tiles-top"></div>
       <div class="meld-row" id="meld-top"></div>
       <div class="opp-tiles-row" id="discard-top"></div>
+      <div id="riichi-top" style="display:none"><div class="riichi-stick-player riichi-bar-top"></div></div>
     </div>
     <!-- LEFT -->
     <div class="opp-zone left" id="zone-left">
+      <div id="riichi-left" style="display:none"><div class="riichi-stick-player riichi-bar-left"></div></div>
       <div>
         <div class="opp-tag" id="tag-left">上家</div>
         <div class="opp-score-tag" id="sc-left">25000</div>
@@ -430,6 +459,7 @@ socket.on('room-full', () => {
         <div class="opp-tiles-row" id="meld-right" style="margin-top:3px"></div>
       </div>
       <div class="opp-tiles-col" id="discard-right"></div>
+      <div id="riichi-right" style="display:none"><div class="riichi-stick-player riichi-bar-right"></div></div>
     </div>
   </div>
   <!-- HAND -->
@@ -437,6 +467,9 @@ socket.on('room-full', () => {
     <div class="hand-meta">
       <div class="my-name" id="my-name">あなた(東)</div>
       <div id="tenpai-badge" class="tenpai-badge"></div>
+    </div>
+    <div id="riichi-bottom" style="display:none;justify-content:center;margin-bottom:2px">
+      <div class="riichi-stick-player riichi-bar-bottom"></div>
     </div>
     <div class="hand-row" id="hand-row"></div>
   </div>
@@ -450,6 +483,7 @@ socket.on('room-full', () => {
     <button class="ab pon" id="btn-pon" onclick="actionPon()" disabled>ポン</button>
     <button class="ab chi" id="btn-chi" onclick="actionChi()" disabled>チー</button>
     <button class="ab kan" id="btn-kan" onclick="actionKan()" disabled>カン</button>
+    <button class="ab" id="btn-pass" onclick="actionPass()" disabled style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:rgba(245,240,232,.5)">パス</button>
   </div>
   <div class="status-bar">
     <div class="status-txt" id="status-txt">-</div>
@@ -1031,8 +1065,9 @@ function handleRemoteAction(data){
   }
 }
 
-// 自分のロンボタン有効化のみ（ターン進行なし）
+// 自分のロン/ポン/チーボタン有効化（非ホスト用、ターン進行なし）
 function checkMyClaimsOnly(fromIdx, tile){
+  // ロンチェック
   const handPlus=[...G.hands[G.myIdx], tile];
   const wins=findWins(handPlus);
   if(wins.length>0){
@@ -1042,14 +1077,24 @@ function checkMyClaimsOnly(fromIdx, tile){
       G.waitingTile=tile;
       G.waitingFrom=fromIdx;
       document.getElementById('btn-ron').disabled=false;
-      setStatus(`ロン可能！ (${tileText(tile)})`);
-      G.ronTimeout=setTimeout(()=>{
-        if(G.phase==='claim'){
-          document.getElementById('btn-ron').disabled=true;
-          G.waitingTile=null;
-        }
-      },5000);
     }
+  }
+  // ポンチェック
+  const myPon=G.hands[G.myIdx].filter(x=>tileKey(x)===tileKey(tile)).length>=2&&!G.riichi[G.myIdx];
+  // チェック（自分が上家=fromIdx+1 の場合のみ）
+  const myChi=G.myIdx===(fromIdx+1)%4&&tile.suit!=='honor'&&!G.riichi[G.myIdx]&&findChiSets(G.hands[G.myIdx],tile).length>0;
+
+  if(myPon||myChi){
+    G.waitingTile=tile;
+    G.waitingFrom=fromIdx;
+    if(myPon) document.getElementById('btn-pon').disabled=false;
+    if(myChi) document.getElementById('btn-chi').disabled=false;
+  }
+  // ロン・ポン・チーのどれかが可能ならパスボタンも表示
+  const anyAvail=!document.getElementById('btn-ron').disabled||myPon||myChi;
+  if(anyAvail){
+    document.getElementById('btn-pass').disabled=false;
+    setStatus(`${tileText(tile)} — ロン/ポン/チー または パス`);
   }
 }
 
@@ -1236,9 +1281,14 @@ function renderOpponents(){
       }
     }
 
-    // Riichi stick
-    // (shown in center)
+    // リーチ棒表示
+    const riichiEl=document.getElementById(`riichi-${id}`);
+    if(riichiEl) riichiEl.style.display=G.riichi[pidx]?'block':'none';
   }
+
+  // 自分のリーチ棒（下側）
+  const myRiichiEl=document.getElementById('riichi-bottom');
+  if(myRiichiEl) myRiichiEl.style.display=G.riichi[G.myIdx]?'flex':'none';
 }
 
 function renderCenter(){
@@ -1658,10 +1708,10 @@ function checkClaims(fromIdx, tile){
     return;
   }
   
-  // Show pon/chi options to human if applicable
+  // 自分（ホスト人間）のポン/チー可否
   const myPon=ponPlayers.includes(G.myIdx);
   const myChi=chiPlayer===G.myIdx;
-  
+
   // CPU pon (random chance 40%) - ホストのみ処理
   if(isHost()){
     for(const p of ponPlayers){
@@ -1677,29 +1727,44 @@ function checkClaims(fromIdx, tile){
       return;
     }
   }
-  
+
+  // 自分 or 非ホスト人間プレイヤーが鳴ける → ボタン有効化してプレイヤー判断を待つ
+  const otherHumanPon=isHost()&&ponPlayers.find(p=>p!==G.myIdx&&G.slotTypes[p]==='human');
+  const otherHumanChi=isHost()&&chiPlayer>=0&&chiPlayer!==G.myIdx&&G.slotTypes[chiPlayer]==='human';
+  const anyHumanClaim=myPon||myChi||otherHumanPon||otherHumanChi;
+
   G.waitingTile=tile;
   G.waitingFrom=fromIdx;
   if(myPon) document.getElementById('btn-pon').disabled=false;
   if(myChi) document.getElementById('btn-chi').disabled=false;
-  if(myPon||myChi){
-    setStatus(`${tileText(tile)} を鳴きますか？`);
-    // 2秒後に自動パス
-    setTimeout(()=>{
-      if(G.phase==='claim'){
-        document.getElementById('btn-pon').disabled=true;
-        document.getElementById('btn-chi').disabled=true;
-        G.waitingTile=null;
-        // ホストのみサーバーへpass通知してターン進行
-        if(isHost()) passToNext(fromIdx);
-      }
-    },2000);
+  if(anyHumanClaim){
+    document.getElementById('btn-pass').disabled=false;
+    setStatus(`${tileText(tile)} — ロン/ポン/チー または パス`);
+    // ホストはプレイヤーがパスするまで待つ（タイムアウトなし）
     return;
   }
 
-  // ホストのみpassToNextでターンを進める
+  // 誰も鳴けない → ホストのみpassToNextでターンを進める
   if(isHost()){
     passToNext(fromIdx);
+  }
+}
+
+// パスボタン押下 — 自分がクレームを放棄する
+function actionPass(){
+  if(G.phase!=='claim') return;
+  const fromIdx=G.waitingFrom;
+  document.getElementById('btn-pon').disabled=true;
+  document.getElementById('btn-chi').disabled=true;
+  document.getElementById('btn-ron').disabled=true;
+  document.getElementById('btn-pass').disabled=true;
+  G.waitingTile=null;
+  G.waitingFrom=-1;
+  // ホストは自分でpassToNext。非ホストはサーバー経由でホストへ通知
+  if(isHost()){
+    passToNext(fromIdx);
+  } else {
+    socket.emit('player-pass', { roomId: G.roomId, fromIdx });
   }
 }
 
@@ -1928,7 +1993,7 @@ function enableMyActions(){
 }
 
 function disableAllActions(){
-  ['btn-draw','btn-discard','btn-tsumo','btn-ron','btn-riichi','btn-pon','btn-chi','btn-kan'].forEach(id=>{
+  ['btn-draw','btn-discard','btn-tsumo','btn-ron','btn-riichi','btn-pon','btn-chi','btn-kan','btn-pass'].forEach(id=>{
     document.getElementById(id).disabled=true;
   });
 }
@@ -1967,13 +2032,11 @@ function ryukyoku(){
 function nextRound(){
   hideOverlay('ov-result');
   hideOverlay('ov-ryukyoku');
-  // ディーラーが上がった場合は連荘（dealerIdxそのまま）、それ以外は親を移す
-  // ここでは単純に次の局へ（dealer rotation はrequestNextRoundで処理）
-  G.roundNum=Math.min(G.roundNum+1,7);
-  G.dealerIdx=(G.dealerIdx+1)%4;
-  G.honba=0;
-  // ホストのみサーバーへ通知。非ホストはgame-startイベントを待つ
+  // ホストのみ局を進めてサーバーへ通知。非ホストはgame-startイベントを待つだけ。
   if(isHost()){
+    G.roundNum=Math.min(G.roundNum+1,7);
+    G.dealerIdx=(G.dealerIdx+1)%4;
+    G.honba=0;
     requestNextRound();
   }
 }

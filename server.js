@@ -217,6 +217,15 @@ io.on("connection", socket => {
     io.to(roomId).emit("broadcast-result", data);
   });
 
+  // 非ホストプレイヤーがパスした → ホストへ中継（ホストがclaim処理を判断）
+  socket.on("player-pass", ({ roomId, fromIdx }) => {
+    const room = getRoom(roomId);
+    if (!room) return;
+    // ホスト（最若番の人間プレイヤー）を特定してforwardする
+    const host = room.players.filter(p => !p.isCpu).sort((a,b) => a.seatIdx - b.seatIdx)[0];
+    if (host) io.to(host.id).emit("player-pass", { fromIdx });
+  });
+
   // クレームパス（次ターンへ）をサーバー経由で全員に同期
   socket.on("claim-pass", ({ roomId, fromIdx }) => {
     const room = getRoom(roomId);
