@@ -280,7 +280,10 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
     // ── リーチ後のオート捨て牌 ──
     if (G.riichi[G.myIdx]) {
       const hand = sortHand(G.hands[G.myIdx]);
-      // ツモ和了チェック
+      const drawnTileObj = G.hands[G.myIdx][G.hands[G.myIdx].length - 1];
+      const drawnTile = hand[hand.length - 1];
+
+      // ① ツモ和了チェック
       const wins = findWins(hand);
       if (wins.length > 0) {
         const ctx = buildCtx(G.myIdx, true);
@@ -290,26 +293,37 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
           enableMyActions();
           setStatus('ツモ和了できます！');
           setTurnTxt(true);
-          return; // ツモ和了ボタンを押せる状態で止める
+          return;
         }
       }
-      // 聴牌牌かどうかチェック（ツモ牌が待ち牌なら和了できるが、上でチェック済み）
-      // リーチ後は必ずツモ切り（最後の牌を切る）
-      const drawnTile = hand[hand.length - 1];
-      // 待ち牌（=和了牌）でない場合はオートで捨てる
-      const waiting = findWaiting(hand.slice(0, -1));
-      const isTsumoAgari = waiting.some(w => tileKey(w) === tileKey(drawnTile));
-      if (!isTsumoAgari) {
-        // オートツモ切り
+
+      // ② オートツモ切り（リーチ中はカン不可）
+      showLog(`${G.names[G.myIdx]}: ${tileText(drawnTile)} をツモ切り（リーチ）`, 'me');
+      G.selectedIdx = hand.length - 1;
+      renderAll();
+      setStatus(`リーチ中 — ${tileText(drawnTile)} をオートで切りました`);
+      setTimeout(() => actionDiscard(), 500);
+      return;
+    }
+    // ── ここから通常処理 ──
+
+    // 4枚目ツモ → ポン or カン選択
+    if (!G.riichi[G.myIdx]) {
+      const hand = sortHand(G.hands[G.myIdx]);
+      const drawnTile = G.hands[G.myIdx][G.hands[G.myIdx].length - 1];
+      const counts = {};
+      for (const t of hand) { const k = tileKey(t); counts[k] = (counts[k] || 0) + 1; }
+      if (counts[tileKey(drawnTile)] >= 4) {
         renderAll();
-        setStatus(`リーチ中 — ${tileText(drawnTile)} をオートで切りました`);
-        showLog(`${G.names[G.myIdx]}: ${tileText(drawnTile)} をツモ切り（リーチ）`, 'me');
+        disableAllActions();
+        document.getElementById('btn-pon').disabled = false;
+        document.getElementById('btn-kan').disabled = false;
         G.selectedIdx = hand.length - 1;
-        setTimeout(() => actionDiscard(), 500);
+        setStatus(`${tileText(drawnTile)} が4枚 — ポン（3枚副露）またはカン（4枚槓）を選んでください`);
+        setTurnTxt(true);
         return;
       }
     }
-    // ── ここから通常処理 ──
 
     renderAll();
     G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1;
@@ -1634,6 +1648,7 @@ function checkClaims(fromIdx, tile){
   
   let ronPlayers=[];
   let ponPlayers=[];
+  let kanPlayers=[];
   let chiPlayer=-1;
   
   for(let p=0;p<4;p++){
@@ -1651,6 +1666,9 @@ function checkClaims(fromIdx, tile){
     // Pon check (need 2 in hand、リーチ中は不可)
     const matchCount=G.hands[p].filter(x=>tileKey(x)===tileKey(tile)).length;
     if(matchCount>=2 && !G.riichi[p]) ponPlayers.push(p);
+    // Kan check 大明槓 (need 3 in hand、リーチ中は不可)
+    if(matchCount>=3 && !G.riichi[p]) kanPlayers.push(p);
+    // Kanフラグを消す（上書きしたので元の空行を削除）
     
     // Chi check (only left player = fromIdx+1、リーチ中は不可)
     if(p===(fromIdx+1)%4&&tile.suit!=='honor'&&!G.riichi[p]){
