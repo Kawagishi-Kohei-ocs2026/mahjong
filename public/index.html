@@ -276,6 +276,41 @@ socket.on('tile-drawn', ({ playerIdx, tile, deckRemaining }) => {
     // 自分のツモ
     G.drewTile = true;
     G.selectedIdx = -1;
+
+    // ── リーチ後のオート捨て牌 ──
+    if (G.riichi[G.myIdx]) {
+      const hand = sortHand(G.hands[G.myIdx]);
+      // ツモ和了チェック
+      const wins = findWins(hand);
+      if (wins.length > 0) {
+        const ctx = buildCtx(G.myIdx, true);
+        const yakuList = calcYaku(wins[0], ctx);
+        if (yakuList.length > 0) {
+          renderAll();
+          enableMyActions();
+          setStatus('ツモ和了できます！');
+          setTurnTxt(true);
+          return; // ツモ和了ボタンを押せる状態で止める
+        }
+      }
+      // 聴牌牌かどうかチェック（ツモ牌が待ち牌なら和了できるが、上でチェック済み）
+      // リーチ後は必ずツモ切り（最後の牌を切る）
+      const drawnTile = hand[hand.length - 1];
+      // 待ち牌（=和了牌）でない場合はオートで捨てる
+      const waiting = findWaiting(hand.slice(0, -1));
+      const isTsumoAgari = waiting.some(w => tileKey(w) === tileKey(drawnTile));
+      if (!isTsumoAgari) {
+        // オートツモ切り
+        renderAll();
+        setStatus(`リーチ中 — ${tileText(drawnTile)} をオートで切りました`);
+        showLog(`${G.names[G.myIdx]}: ${tileText(drawnTile)} をツモ切り（リーチ）`, 'me');
+        G.selectedIdx = hand.length - 1;
+        setTimeout(() => actionDiscard(), 500);
+        return;
+      }
+    }
+    // ── ここから通常処理 ──
+
     renderAll();
     G.selectedIdx = sortHand(G.hands[G.myIdx]).length - 1;
     renderHand();
