@@ -173,6 +173,11 @@ io.on("connection", socket => {
         if (idx >= 0) room.hands[playerIdx].splice(idx, 1);
       }
       room.turn = playerIdx;
+      // fromIdx: 捨て牌の元のプレイヤー（鳴かれた側）を特定して付与
+      if (data.fromIdx === undefined) {
+        // 捨て牌の直前のターンから推定（鳴いた人の前のターン）
+        data.fromIdx = (playerIdx + 3) % 4; // fallback
+      }
     }
 
     if (data.type === "riichi") {
